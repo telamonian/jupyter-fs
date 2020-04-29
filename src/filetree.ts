@@ -20,7 +20,7 @@ import JSZip from "jszip";
 import { IFSResource } from "./filesystem";
 import { fileTreeIcon } from "./icons";
 import { Uploader } from "./upload";
-import { CommandIDs, doRename, fileSizeString, OpenDirectWidget, Patterns, switchView, writeZipFile } from "./utils";
+import { btoaNopad, CommandIDs, doRename, fileSizeString, OpenDirectWidget, Patterns, switchView, writeZipFile } from "./utils";
 
 // tslint:disable: no-namespace
 // tslint:disable: variable-name
@@ -28,29 +28,19 @@ import { CommandIDs, doRename, fileSizeString, OpenDirectWidget, Patterns, switc
 // tslint:disable: max-classes-per-file
 
 export class FileTree extends Widget {
-  public cm: ContentsManager;
-  public dr: DocumentRegistry;
-  public commands: any;
-  public toolbar: Toolbar;
-  public table: HTMLTableElement;
-  public tree: HTMLElement;
-  public controller: any;
-  public selected: string;
-  public basepath: string;
-
   constructor({
     app,
-
     basepath = "",
-    id = "jupyterlab-filetree"
+    name = "filetree"
   }: FileTree.IOptions) {
     super();
-    this.id = id;
+
+    this.name = name;
+    this.id = basepath ? `${name}_${basepath}` : name;
     this.title.icon = fileTreeIcon;
-    this.title.caption = "File Tree";
+    this.title.caption = name;
     this.title.closable = true;
     this.addClass("jp-filetreeWidget");
-    this.addClass(id);
 
     this.cm = app.serviceManager.contents;
     this.dr = app.docRegistry;
@@ -60,7 +50,6 @@ export class FileTree extends Widget {
     this.selected = "";
 
     this.toolbar.addClass("filetree-toolbar");
-    this.toolbar.addClass(id);
 
     const layout = new PanelLayout();
     layout.addWidget(this.toolbar);
@@ -81,7 +70,7 @@ export class FileTree extends Widget {
     table.className = "filetree-head";
     const thead = table.createTHead();
     const tbody = table.createTBody();
-    tbody.id = "filetree-body";
+    tbody.className = "filetree-body";
     const headRow = document.createElement("tr");
     headers.forEach((el: string) => {
       const th = document.createElement("th");
@@ -105,7 +94,7 @@ export class FileTree extends Widget {
   public reload() { // rebuild tree
     this.table.removeChild(this.tree);
     const tbody = this.table.createTBody();
-    tbody.id = "filetree-body";
+    tbody.className = "filetree-body";
     this.tree = tbody;
     const base = this.cm.get(this.basepath);
     base.then((res) => {
@@ -126,7 +115,9 @@ export class FileTree extends Widget {
     });
     Promise.all(array).then((results) => {
       for (const r in results) {
-        const row_element = this.node.querySelector("[id='" + btoa(results[r].path.replace(this.basepath, "")) + "']");
+        const path = btoaNopad(results[r].path.replace(this.basepath, ""));
+        const row_element = this.node.querySelector(`[data-path=${path}]`);
+
         this.buildTableContents(results[r].content, 1 + results[r].path.split("/").length, row_element);
       }
     }).catch((reasons) => {
@@ -166,7 +157,7 @@ export class FileTree extends Widget {
 
       tr.oncontextmenu = () => { commands.execute((CommandIDs.set_context + ":" + this.id), {path}); };
       tr.draggable = true;
-      tr.ondragstart = (event) => {event.dataTransfer.setData("Path", tr.id); };
+      tr.ondragstart = (event) => {event.dataTransfer.setData("Path", tr.dataset.path); };
 
       if (entry.type === "directory") {
         tr.onclick = (event) => {
@@ -292,7 +283,7 @@ export class FileTree extends Widget {
     tr.appendChild(td1);
     tr.appendChild(td2);
     tr.appendChild(td3);
-    tr.id = btoa(object.path);
+    tr.dataset.path = btoaNopad(object.path);
 
     return tr;
   }
@@ -332,6 +323,18 @@ export class FileTree extends Widget {
     await next;
   }
 
+  controller: any;
+  selected: string;
+
+  readonly basepath: string;
+  readonly cm: ContentsManager;
+  readonly dr: DocumentRegistry;
+  readonly name: string;
+  readonly toolbar: Toolbar;
+
+  private commands: any;
+  private table: HTMLTableElement;
+  private tree: HTMLElement;
 }
 
 export namespace FileTree {
@@ -339,7 +342,7 @@ export namespace FileTree {
     app: JupyterFrontEnd;
 
     basepath?: string;
-    id?: string;
+    name?: string;
   }
 
   export interface ISidebarProps {
@@ -351,7 +354,7 @@ export namespace FileTree {
     router: IRouter;
 
     basepath?: string;
-    id?: string;
+    name?: string;
     side?: string;
   }
 
@@ -359,7 +362,7 @@ export namespace FileTree {
     return sidebar({
       ...props,
       basepath: resource.drive,
-      id: [resource.name, resource.drive].join(":")
+      name: resource.name
     });
   }
 
@@ -372,10 +375,10 @@ export namespace FileTree {
     router,
 
     basepath = "",
-    id = "jupyterlab-filetree",
+    name = "filetree",
     side = "left"
   }: FileTree.ISidebarProps): IDisposable {
-    const widget = new FileTree({app, basepath, id});
+    const widget = new FileTree({app, basepath, name});
     restorer.add(widget, widget.id);
     app.shell.add(widget, side);
 
@@ -407,6 +410,12 @@ export namespace FileTree {
     //   app.commands.execute(CommandIDs.refresh);
     // }, 10000);
 
+    const itemSelector = `#${widget.id} .filetree-item`;
+    const fileSelector = `#${widget.id} .filetree-file`;
+    const folderSelector = `#${widget.id} .filetree-folder`;
+
+    const selectedElement = () => widget.node.querySelector(`[data-path=${btoaNopad(widget.selected)}]`);
+
     // return a disposable containing all disposables associated
     // with this widget, ending with the widget itself
     return [app.commands.addCommand((CommandIDs.toggle + ":" + widget.id), {
@@ -414,17 +423,21 @@ export namespace FileTree {
         const row = args.row as string;
         const level = args.level as number;
 
-        let row_element = widget.node.querySelector("[id='" + btoa(row) + "']") as HTMLElement;
+        const nodeByPath = (path: string) => widget.node.querySelector(`[data-path=${path}]`);
+        const isIn = (path: string, dir: string) => path.startsWith(`${dir}/`);
 
-        if (row_element.nextElementSibling && atob(row_element.nextElementSibling.id).startsWith(row + "/")) { // next element in folder, already constructed
-          const display = switchView((widget.node.querySelector("[id='" + row_element.nextElementSibling.id + "']") as HTMLElement).style.display);
+        let row_enc = btoaNopad(row);
+        let row_element = nodeByPath(row_enc).nextElementSibling as HTMLElement;
+
+        if (row_element && isIn(atob(row_element.dataset.path), row)) { // next element in folder, already constructed
+          const display = switchView(row_element.style.display);
           widget.controller[row].open = !(widget.controller[row].open);
           const open_flag = widget.controller[row].open;
-          // open folder
-          while (row_element.nextElementSibling && atob(row_element.nextElementSibling.id).startsWith(row + "/")) {
-            row_element = (widget.node.querySelector("[id='" + row_element.nextElementSibling.id + "']") as HTMLElement);
+
+          row_element = row_element.nextElementSibling as HTMLElement;
+          while (row_element && isIn(atob(row_element.dataset.path), row)) {
             // check if the parent folder is open
-            if (!(open_flag) || widget.controller[PathExt.dirname(atob(row_element.id))].open) {
+            if (!(open_flag) || widget.controller[PathExt.dirname(atob(row_element.dataset.path))].open) {
               row_element.style.display = display;
             }
           }
@@ -468,7 +481,9 @@ export namespace FileTree {
           Promise.all(array).then((results) => {
             for (const r in results) {
               if (results[r].type === "directory") {
-                const row_element = widget.node.querySelector("[id='" + btoa(results[r].path) + "']");
+                const path = btoaNopad(results[r].path);
+                const row_element = widget.node.querySelector(`[data-path=${path}]`);
+
                 widget.buildTableContents(results[r].content, 1 + results[r].path.split("/").length, row_element);
               }
             }
@@ -502,14 +517,14 @@ export namespace FileTree {
     app.commands.addCommand((CommandIDs.set_context + ":" + widget.id), {
       execute: (args) => {
         if (widget.selected !== "") {
-          const element = (widget.node.querySelector("[id='" + btoa(widget.selected) + "']") as HTMLElement);
+          const element = selectedElement() as HTMLElement;
           if (element !== null) {
             element.className = element.className.replace("selected", "");
           }
         }
         widget.selected = args.path as string;
         if (widget.selected !== "") {
-          const element = widget.node.querySelector("[id='" + btoa(widget.selected) + "']");
+          const element = selectedElement();
           if (element !== null) {
             element.className += " selected";
           }
@@ -522,14 +537,14 @@ export namespace FileTree {
       execute: (args) => {
         if (widget.selected !== "") {
           // tslint:disable-next-line: no-shadowed-variable
-          const element = (widget.node.querySelector("[id='" + btoa(widget.selected) + "']") as HTMLElement);
+          const element = selectedElement();
           if (element !== null) {
             element.className = element.className.replace("selected", "");
           }
         }
         if (args.path === "") { return; }
         widget.selected = args.path as string;
-        const element = widget.node.querySelector("[id='" + btoa(widget.selected) + "']");
+        const element = selectedElement();
         if (element !== null) {
           element.className += " selected";
         }
@@ -539,8 +554,7 @@ export namespace FileTree {
 
     app.commands.addCommand((CommandIDs.rename + ":" + widget.id), {
       execute: () => {
-        const td = widget.node.querySelector("[id='" + btoa(widget.selected) + "']").
-          getElementsByClassName("filetree-item-name")[0];
+        const td = selectedElement().getElementsByClassName("filetree-item-name")[0];
         const text_area = td.getElementsByClassName("filetree-name-span")[0] as HTMLElement;
 
         if (text_area === undefined) {
@@ -680,50 +694,50 @@ export namespace FileTree {
     app.contextMenu.addItem({
       command: (CommandIDs.rename + ":" + widget.id),
       rank: 3,
-      selector: "div." + widget.id + " > table > *> .filetree-item",
+      selector: itemSelector
     }),
 
     app.contextMenu.addItem({
       command: (CommandIDs.delete_op + ":" + widget.id),
       rank: 4,
-      selector: "div." + widget.id + " > table > *> .filetree-item",
+      selector: itemSelector
     }),
 
     app.contextMenu.addItem({
       command: (CommandIDs.copy_path + ":" + widget.id),
       rank: 5,
-      selector: "div." + widget.id + " > table > *> .filetree-item",
+      selector: itemSelector
     }),
 
     app.contextMenu.addItem({
       command: (CommandIDs.download + ":" + widget.id),
       rank: 1,
-      selector: "div." + widget.id + " > table > *> .filetree-file",
+      selector: fileSelector
     }),
 
     app.contextMenu.addItem({
       command: (CommandIDs.create_folder + ":" + widget.id),
       rank: 2,
-      selector: "div." + widget.id + " > table > * > .filetree-folder",
+      selector: folderSelector
     }),
 
     app.contextMenu.addItem({
       command: (CommandIDs.create_file + ":" + widget.id),
       rank: 1,
-      selector: "div." + widget.id + " > table > * > .filetree-folder",
+      selector: folderSelector
     }),
 
     app.contextMenu.addItem({
       command: (CommandIDs.upload + ":" + widget.id),
       rank: 3,
-      selector: "div." + widget.id + " > table > * > .filetree-folder",
+      selector: folderSelector
     }),
 
     app.contextMenu.addItem({
       args: {folder: true},
       command: (CommandIDs.download + ":" + widget.id),
       rank: 1,
-      selector: "div." + widget.id + " > table > *> .filetree-folder",
+      selector: folderSelector
     }),
 
     router.register({ command: (CommandIDs.navigate + ":" + widget.id), pattern: Patterns.tree }),
